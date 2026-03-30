@@ -14,6 +14,7 @@ type Service struct {
 	ciscoUser     string
 	ciscoPassword string
 	ciscoProfile  string
+	dnsServers    []string
 	ciscoReady    chan struct{}
 }
 
@@ -21,13 +22,15 @@ type State struct {
 	CiscoConnected bool
 	PFDisabled     bool
 	ProxyStarted   bool
+	DNSStarted     bool
 }
 
-func New(ciscoUser, ciscoPassword, ciscoProfile string) *Service {
+func New(ciscoUser, ciscoPassword, ciscoProfile string, dnsServers []string) *Service {
 	return &Service{
 		ciscoUser:     ciscoUser,
 		ciscoPassword: ciscoPassword,
 		ciscoProfile:  ciscoProfile,
+		dnsServers:    dnsServers,
 		ciscoReady:    make(chan struct{}),
 	}
 }
@@ -55,6 +58,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	g.Go(func() error {
 		return s.startProxy(ctx)
+	})
+
+	g.Go(func() error {
+		return s.startDNS(ctx)
 	})
 
 	if err := g.Wait(); err != nil {

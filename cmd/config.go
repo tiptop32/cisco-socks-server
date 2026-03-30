@@ -11,11 +11,12 @@ import (
 )
 
 type Config struct {
-	CiscoUser     string `yaml:"user"`
-	CiscoPassword string `yaml:"password"`
-	CiscoProfile  string `yaml:"profile"`
-	noTUI bool
-	debug bool
+	CiscoUser     string   `yaml:"user"`
+	CiscoPassword string   `yaml:"password"`
+	CiscoProfile  string   `yaml:"profile"`
+	DNSServers    []string `yaml:"dns_servers"`
+	noTUI         bool
+	debug         bool
 }
 
 func loadConfig() (*Config, error) {
@@ -62,6 +63,10 @@ func (c *Config) validate() error {
 
 	if c.CiscoProfile == "" {
 		return fmt.Errorf("config: profile is required")
+	}
+
+	if len(c.DNSServers) == 0 {
+		return fmt.Errorf("config: dns_servers is required")
 	}
 
 	return nil

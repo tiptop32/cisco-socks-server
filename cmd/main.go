@@ -29,7 +29,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := service.New(cfg.CiscoUser, cfg.CiscoPassword, cfg.CiscoProfile)
+	srv := service.New(cfg.CiscoUser, cfg.CiscoPassword, cfg.CiscoProfile, cfg.DNSServers)
 
 	if !cfg.noTUI {
 		go func() {
