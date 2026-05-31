@@ -82,6 +82,18 @@ func (s *Service) startCisco(ctx context.Context) error {
 
 		state := s.GetState()
 
+		if state.CiscoConnected && !state.PFDisabled {
+			slog.Info("disabling network packet filter")
+			if err := cisco.DisablePF(ctx); err != nil {
+				slog.Error("failed to disable network pf", "error", err)
+			} else {
+				slog.Info("network packet filter disabled successfully")
+				s.setStatus(func(st *State) {
+					st.PFDisabled = true
+				})
+			}
+		}
+
 		if state.CiscoConnected && !ciscoReadyNotified {
 			close(s.ciscoReady)
 			ciscoReadyNotified = true
