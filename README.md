@@ -29,6 +29,12 @@ sudo ./cisco-socks-server
 
 Proxy will be available at `localhost:8080`.
 
+The SOCKS5 listener binds itself to the detected LAN interface
+(`IP_BOUND_IF`), so reply traffic egresses via the physical NIC even though
+Cisco hijacks the routing table for `192.168.x.x` into the VPN tunnel. This
+keeps the proxy reachable from other devices on your local network
+(e.g., `curl --socks5 <mac-lan-ip>:8080 ...`).
+
 ### Flags
 
 - `--no-tui` — disable TUI, plain log output

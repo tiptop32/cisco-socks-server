@@ -20,7 +20,8 @@ type Service struct {
 
 type State struct {
 	CiscoConnected bool
-	PFDisabled     bool
+	LANSubnet      string
+	LANInterface   string
 	ProxyStarted   bool
 	DNSStarted     bool
 }

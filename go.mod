@@ -4,17 +4,17 @@ go 1.24.0
 
 require (
 	github.com/jroimartin/gocui v0.5.0
+	github.com/miekg/dns v1.1.72
 	github.com/things-go/go-socks5 v0.0.6
 	golang.org/x/sync v0.19.0
+	golang.org/x/sys v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/mattn/go-runewidth v0.0.9 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/nsf/termbox-go v1.1.1 // indirect
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect
 )

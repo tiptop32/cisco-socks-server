@@ -32,10 +32,10 @@ func setupStatus(g *gocui.Gui, svc *service.Service, done <-chan struct{}, maxX,
 
 						state := svc.GetState()
 
-						fmt.Fprintf(v, " VPN    %s\n", indicator(state.CiscoConnected))
-						fmt.Fprintf(v, " Filter %s\n", indicator(state.PFDisabled))
-						fmt.Fprintf(v, " Proxy  %s\n", indicator(state.ProxyStarted))
-						fmt.Fprintf(v, " DNS    %s\n", indicator(state.DNSStarted))
+					fmt.Fprintf(v, " VPN    %s\n", indicator(state.CiscoConnected))
+					fmt.Fprintf(v, " Bind   %s\n", bindLabel(state.LANInterface))
+					fmt.Fprintf(v, " Proxy  %s\n", indicator(state.ProxyStarted))
+					fmt.Fprintf(v, " DNS    %s\n", indicator(state.DNSStarted))
 
 						return nil
 					})
@@ -53,4 +53,12 @@ func indicator(ok bool) string {
 	}
 
 	return colorize("○ --", 9)
+}
+
+func bindLabel(iface string) string {
+	if iface == "" {
+		return colorize("○ --", 9)
+	}
+
+	return colorize("● "+iface, 10)
 }
