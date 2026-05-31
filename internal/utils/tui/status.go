@@ -36,7 +36,6 @@ func setupStatus(g *gocui.Gui, svc *service.Service, done <-chan struct{}, maxX,
 					fmt.Fprintf(v, " PF     %s\n", indicator(state.PFDisabled))
 					fmt.Fprintf(v, " Bind   %s\n", bindLabel(state.LANInterface))
 					fmt.Fprintf(v, " Proxy  %s\n", indicator(state.ProxyStarted))
-					fmt.Fprintf(v, " DNS    %s\n", indicator(state.DNSStarted))
 
 						return nil
 					})

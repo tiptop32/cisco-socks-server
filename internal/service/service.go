@@ -24,7 +24,6 @@ type State struct {
 	LANSubnet      string
 	LANInterface   string
 	ProxyStarted   bool
-	DNSStarted     bool
 }
 
 func New(ciscoUser, ciscoPassword, ciscoProfile string, dnsServers []string) *Service {
@@ -60,10 +59,6 @@ func (s *Service) Start(ctx context.Context) error {
 
 	g.Go(func() error {
 		return s.startProxy(ctx)
-	})
-
-	g.Go(func() error {
-		return s.startDNS(ctx)
 	})
 
 	if err := g.Wait(); err != nil {
