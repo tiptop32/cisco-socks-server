@@ -36,8 +36,6 @@ func (s *Service) startProxy(ctx context.Context) error {
 		return nil
 	}), socks5.WithLogger(&proxyLogger{}))
 
-	state := s.GetState()
-
 	// Listener 1: loopback (no IP_BOUND_IF) — for localhost clients
 	loopbackList, err := net.Listen("tcp4", "127.0.0.1:8080")
 	if err != nil {
@@ -45,41 +43,36 @@ func (s *Service) startProxy(ctx context.Context) error {
 	}
 
 	listeners := []net.Listener{loopbackList}
+	state := s.GetState()
 
-	// Listener 2: LAN IP with IP_BOUND_IF — for LAN clients
+	// Listener 2: any address on en0 with IP_BOUND_IF — for LAN clients
 	if state.LANInterface != "" {
 		ifi, ifErr := net.InterfaceByName(state.LANInterface)
 		if ifErr != nil {
 			slog.Warn("failed to lookup LAN interface",
 				"interface", state.LANInterface, "error", ifErr)
 		} else {
-			lanIP := interfaceIPv4(ifi)
-			if lanIP != "" {
-				lc := net.ListenConfig{}
-				idx := ifi.Index
-				lc.Control = func(_, _ string, c syscall.RawConn) error {
-					var serr error
-					cerr := c.Control(func(fd uintptr) {
-						serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, idx)
-					})
-					if cerr != nil {
-						return cerr
-					}
-					return serr
+			lc := net.ListenConfig{}
+			idx := ifi.Index
+			lc.Control = func(_, _ string, c syscall.RawConn) error {
+				var serr error
+				cerr := c.Control(func(fd uintptr) {
+					serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, idx)
+				})
+				if cerr != nil {
+					return cerr
 				}
+				return serr
+			}
 
-				lanList, lanErr := lc.Listen(ctx, "tcp4", lanIP+":8080")
-				if lanErr != nil {
-					slog.Warn("failed to listen on LAN IP",
-						"ip", lanIP, "error", lanErr)
-				} else {
-					slog.Info("proxy bound to LAN interface",
-						"interface", state.LANInterface, "ip", lanIP)
-					listeners = append(listeners, lanList)
-				}
+			lanList, lanErr := lc.Listen(ctx, "tcp4", "0.0.0.0:8080")
+			if lanErr != nil {
+				slog.Warn("failed to listen on interface",
+					"interface", state.LANInterface, "error", lanErr)
 			} else {
-				slog.Warn("no IPv4 address found on LAN interface",
+				slog.Info("proxy bound to LAN interface",
 					"interface", state.LANInterface)
+				listeners = append(listeners, lanList)
 			}
 		}
 	} else {
