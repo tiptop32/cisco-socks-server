@@ -11,9 +11,10 @@ import (
 const ciscoPath = "/opt/cisco/secureclient/bin/vpn"
 
 const (
-	stateConnected    = "Connected"
-	stateDisconnected = "Disconnected"
-	stateUnknown      = "Unknown"
+	StateConnected    = "Connected"
+	StateDisconnected = "Disconnected"
+	StateReconnecting = "Reconnecting"
+	StateUnknown      = "Unknown"
 )
 
 var (
@@ -36,20 +37,28 @@ func Connect(ctx context.Context, profile, user, password string) error {
 		return ErrAcquired
 	}
 
-	if parseState(output) != stateConnected {
-		return fmt.Errorf("%w: %s", ErrNotConnected, output)
+	// "-s connect" prints an unordered event stream: a successful connect can
+	// still end with a stale ">> state: Disconnected" line, so ask the agent
+	// for its actual state instead of trusting the stream tail.
+	state, err := Status(ctx)
+	if err != nil {
+		return err
+	}
+
+	if state != StateConnected {
+		return fmt.Errorf("%w (state %s): %s", ErrNotConnected, state, output)
 	}
 
 	return nil
 }
 
-func IsConnected(ctx context.Context) (bool, error) {
+func Status(ctx context.Context) (string, error) {
 	out, err := run(ctx, ciscoPath, "-s", "state")
 	if err != nil {
-		return false, fmt.Errorf("vpn state check error: %w", err)
+		return StateUnknown, fmt.Errorf("vpn state check error: %w", err)
 	}
 
-	return parseState(out) == stateConnected, nil
+	return parseState(out), nil
 }
 
 func Disconnect(ctx context.Context) error {
@@ -84,11 +93,13 @@ func parseState(output string) string {
 
 	switch last {
 	case "Подключено", "Connected":
-		return stateConnected
+		return StateConnected
 	case "Отключено", "Disconnected":
-		return stateDisconnected
+		return StateDisconnected
+	case "Reconnecting":
+		return StateReconnecting
 	default:
-		return stateUnknown
+		return StateUnknown
 	}
 }
 

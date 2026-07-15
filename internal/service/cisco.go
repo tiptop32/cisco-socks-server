@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,10 +10,15 @@ import (
 	"github.com/merzzzl/cisco-socks-server/internal/utils/route"
 )
 
+const (
+	ciscoPollInterval    = 5 * time.Second
+	ciscoMaxConnectDelay = time.Minute
+)
+
 func (s *Service) startCisco(ctx context.Context) error {
-	maxRetries := 3
 	ciscoReadyNotified := false
 	connectedByUs := false
+	connectDelay := ciscoPollInterval
 
 	defer func() {
 		s.setStatus(func(st *State) {
@@ -44,12 +48,30 @@ func (s *Service) startCisco(ctx context.Context) error {
 			}
 		}
 
-		connected, err := cisco.IsConnected(ctx)
-		if err != nil {
-			slog.Error("failed to get cisco state", "error", err)
-		}
+		delay := ciscoPollInterval
 
-		if !connected && err == nil {
+		ciscoState, err := cisco.Status(ctx)
+
+		switch {
+		case err != nil:
+			// transient CLI failure (the vpn binary occasionally aborts);
+			// keep the last known status and poll again
+			slog.Error("failed to get cisco state", "error", err)
+		case ciscoState == cisco.StateConnected:
+			connectDelay = ciscoPollInterval
+
+			s.setStatus(func(st *State) {
+				st.CiscoConnected = true
+			})
+		case ciscoState == cisco.StateReconnecting:
+			// the agent is re-establishing the tunnel on its own; issuing
+			// "connect" now would only interfere — wait for it to settle
+			slog.Info("cisco agent is reconnecting, waiting")
+
+			s.setStatus(func(st *State) {
+				st.CiscoConnected = false
+			})
+		default:
 			s.setStatus(func(st *State) {
 				st.CiscoConnected = false
 			})
@@ -57,27 +79,18 @@ func (s *Service) startCisco(ctx context.Context) error {
 			if err := cisco.Connect(ctx, s.ciscoProfile, s.ciscoUser, s.ciscoPassword); errors.Is(err, cisco.ErrAcquired) {
 				slog.Warn("another Cisco client has connection capability, will retry")
 			} else if err != nil {
-				if maxRetries == 0 {
-					return fmt.Errorf("failed to connect to cisco: %w", err)
-				}
+				slog.Error("failed to connect to cisco", "error", err, "retry_in", connectDelay)
 
-				slog.Error("failed to connect to cisco", "error", err)
-
-				maxRetries--
+				delay = connectDelay
+				connectDelay = min(connectDelay*2, ciscoMaxConnectDelay)
 			} else {
-				maxRetries = 3
+				connectDelay = ciscoPollInterval
 				connectedByUs = true
 
 				s.setStatus(func(st *State) {
 					st.CiscoConnected = true
 				})
 			}
-		}
-
-		if connected && err == nil {
-			s.setStatus(func(st *State) {
-				st.CiscoConnected = true
-			})
 		}
 
 		state := s.GetState()
@@ -101,7 +114,7 @@ func (s *Service) startCisco(ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
-		case <-time.After(5 * time.Second):
+		case <-time.After(delay):
 		}
 	}
 
