@@ -143,6 +143,36 @@ func isRFC1918(ip net.IP) bool {
 	return false
 }
 
+// PinHostRoute rewrites the per-host route so reply traffic to a LAN client
+// egresses via the physical NIC instead of the Cisco tunnel. Cisco steals the
+// whole connected subnet into utunX on connect, so the /24 cannot be fixed —
+// but a host route flipped to the LAN interface (together with PinARP) is the
+// only mac-side change Cisco tolerates. Fails with "not in table" until PinARP
+// has created the host entry on the first pass; callers re-assert every tick.
+func PinHostRoute(ctx context.Context, ip, iface string) error {
+	_, err := run(ctx, "route", "change", ip, "-interface", iface)
+	if err != nil {
+		return fmt.Errorf("route change %s: %w", ip, err)
+	}
+
+	return nil
+}
+
+// PinARP installs a static ARP entry for a LAN client. Without it the kernel
+// has no on-link route to the client (Cisco owns the subnet), so IP_BOUND_IF
+// frames leave with the default gateway's MAC and the client never sees them.
+// Note: it must be `arp -S` (capital, replaces existing entry) — lowercase
+// `arp -s` fails with "can only proxy" while the subnet is routed into the
+// tunnel. "temp" keeps the entry evictable; the supervisor re-asserts it.
+func PinARP(ctx context.Context, ip, mac string) error {
+	_, err := run(ctx, "arp", "-S", ip, mac, "temp")
+	if err != nil {
+		return fmt.Errorf("arp -S %s: %w", ip, err)
+	}
+
+	return nil
+}
+
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {

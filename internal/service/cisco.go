@@ -26,6 +26,10 @@ func (s *Service) startCisco(ctx context.Context) error {
 
 	var reconnectingSince time.Time
 
+	// tracks which LAN clients already had a successful route+ARP pin, so the
+	// "pinned" log line fires once per client instead of every 5s tick.
+	pinned := make(map[string]bool, len(s.lanClients))
+
 	defer func() {
 		s.setStatus(func(st *State) {
 			st.CiscoConnected = false
@@ -74,6 +78,7 @@ func (s *Service) startCisco(ctx context.Context) error {
 			// the agent is re-establishing the tunnel on its own; issuing
 			// "connect" now would only interfere — wait for it to settle.
 			// Cisco re-enables pf on reconnect, so pfctl -d must run again.
+			clear(pinned)
 			s.setStatus(func(st *State) {
 				st.CiscoConnected = false
 				st.PFDisabled = false
@@ -97,6 +102,7 @@ func (s *Service) startCisco(ctx context.Context) error {
 		default:
 			reconnectingSince = time.Time{}
 
+			clear(pinned)
 			s.setStatus(func(st *State) {
 				st.CiscoConnected = false
 				st.PFDisabled = false
@@ -133,6 +139,10 @@ func (s *Service) startCisco(ctx context.Context) error {
 			}
 		}
 
+		if state.CiscoConnected && state.LANInterface != "" {
+			s.pinLANClients(ctx, state.LANInterface, pinned)
+		}
+
 		if state.CiscoConnected && !ciscoReadyNotified {
 			close(s.ciscoReady)
 			ciscoReadyNotified = true
@@ -145,4 +155,31 @@ func (s *Service) startCisco(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// pinLANClients re-asserts a per-host route + static ARP entry for every
+// configured LAN client. Cisco steals the connected subnet into utunX and
+// deletes any broader mac-side fix (scoped routes, /24 re-adds, pf route-to),
+// but tolerates host-level route+ARP pins — without them, reply frames from
+// the IP_BOUND_IF listener leave with the default gateway's MAC and never
+// reach the client. Failures are logged at debug level only: the first pass
+// after (re)connect is expected to partially fail until the ARP entry exists.
+func (s *Service) pinLANClients(ctx context.Context, iface string, pinned map[string]bool) {
+	for _, lc := range s.lanClients {
+		routeErr := route.PinHostRoute(ctx, lc.IP, iface)
+		if routeErr != nil {
+			slog.Debug("route pin skipped", "ip", lc.IP, "error", routeErr)
+		}
+
+		arpErr := route.PinARP(ctx, lc.IP, lc.MAC)
+		if arpErr != nil {
+			slog.Debug("arp pin skipped", "ip", lc.IP, "error", arpErr)
+		}
+
+		if routeErr == nil && arpErr == nil && !pinned[lc.IP] {
+			pinned[lc.IP] = true
+
+			slog.Info("LAN client pinned to interface", "ip", lc.IP, "mac", lc.MAC, "interface", iface)
+		}
+	}
 }

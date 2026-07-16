@@ -3,18 +3,27 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/merzzzl/cisco-socks-server/internal/service"
 )
 
+type LANClient struct {
+	IP  string `yaml:"ip"`
+	MAC string `yaml:"mac"`
+}
+
 type Config struct {
-	CiscoUser     string   `yaml:"user"`
-	CiscoPassword string   `yaml:"password"`
-	CiscoProfile  string   `yaml:"profile"`
-	DNSServers    []string `yaml:"dns_servers"`
+	CiscoUser     string      `yaml:"user"`
+	CiscoPassword string      `yaml:"password"`
+	CiscoProfile  string      `yaml:"profile"`
+	DNSServers    []string    `yaml:"dns_servers"`
+	LANClients    []LANClient `yaml:"lan_clients"`
 	noTUI         bool
 	debug         bool
 }
@@ -69,5 +78,27 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: dns_servers is required")
 	}
 
+	// fail fast on malformed lan_clients: at runtime a bad entry would only
+	// surface as a debug-level "pin skipped" message every poll tick
+	for i, lc := range c.LANClients {
+		if ip := net.ParseIP(lc.IP); ip == nil || ip.To4() == nil {
+			return fmt.Errorf("config: lan_clients[%d]: invalid IPv4 address %q", i, lc.IP)
+		}
+
+		if _, err := net.ParseMAC(lc.MAC); err != nil {
+			return fmt.Errorf("config: lan_clients[%d]: invalid MAC %q: %w", i, lc.MAC, err)
+		}
+	}
+
 	return nil
+}
+
+func (c *Config) toLANClients() []service.LANClient {
+	out := make([]service.LANClient, 0, len(c.LANClients))
+
+	for _, lc := range c.LANClients {
+		out = append(out, service.LANClient{IP: lc.IP, MAC: lc.MAC})
+	}
+
+	return out
 }

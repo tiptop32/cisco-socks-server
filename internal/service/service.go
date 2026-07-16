@@ -8,6 +8,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type LANClient struct {
+	IP  string
+	MAC string
+}
+
 type Service struct {
 	mu            sync.RWMutex
 	status        State
@@ -15,6 +20,7 @@ type Service struct {
 	ciscoPassword string
 	ciscoProfile  string
 	dnsServers    []string
+	lanClients    []LANClient
 	ciscoReady    chan struct{}
 }
 
@@ -27,12 +33,13 @@ type State struct {
 	DNSStarted     bool
 }
 
-func New(ciscoUser, ciscoPassword, ciscoProfile string, dnsServers []string) *Service {
+func New(ciscoUser, ciscoPassword, ciscoProfile string, dnsServers []string, lanClients []LANClient) *Service {
 	return &Service{
 		ciscoUser:     ciscoUser,
 		ciscoPassword: ciscoPassword,
 		ciscoProfile:  ciscoProfile,
 		dnsServers:    dnsServers,
+		lanClients:    lanClients,
 		ciscoReady:    make(chan struct{}),
 	}
 }
