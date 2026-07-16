@@ -143,34 +143,64 @@ func isRFC1918(ip net.IP) bool {
 	return false
 }
 
-// PinHostRoute rewrites the per-host route so reply traffic to a LAN client
-// egresses via the physical NIC instead of the Cisco tunnel. Cisco steals the
-// whole connected subnet into utunX on connect, so the /24 cannot be fixed —
-// but a host route flipped to the LAN interface (together with PinARP) is the
-// only mac-side change Cisco tolerates. Fails with "not in table" until PinARP
-// has created the host entry on the first pass; callers re-assert every tick.
-func PinHostRoute(ctx context.Context, ip, iface string) error {
-	_, err := run(ctx, "route", "change", ip, "-interface", iface)
-	if err != nil {
-		return fmt.Errorf("route change %s: %w", ip, err)
+// EnsureClientPinned keeps a LAN client reachable while Cisco owns the
+// connected subnet: without a per-host pin the kernel has no on-link route to
+// the client, so IP_BOUND_IF frames leave with the default gateway's MAC and
+// the client never sees them. Host-level route+ARP pins are the only mac-side
+// change Cisco tolerates (scoped routes, /24 re-adds, pf route-to all get
+// deleted within seconds).
+//
+// The check is read-only (`arp -n`): mutating unconditionally is not an
+// option because `arp -S` replaces the entry (delete + re-add), which drops
+// in-flight frames and causes visible stalls for active connections. Only
+// when the entry has drifted it re-asserts `route change <ip> -interface`
+// plus `arp -S <ip> <mac> temp`. Note: it must be `arp -S` (capital) —
+// lowercase `arp -s` fails with "can only proxy" while the subnet is routed
+// into the tunnel. Returns true when a re-pin was performed.
+func EnsureClientPinned(ctx context.Context, ip, mac, iface string) (bool, error) {
+	if out, err := run(ctx, "arp", "-n", ip); err == nil && arpEntryMatches(out, mac, iface) {
+		return false, nil
 	}
 
-	return nil
+	// route change fails with "not in table" until the ARP entry exists
+	// (arp -S creates the host entry itself) — safe to ignore
+	_, _ = run(ctx, "route", "change", ip, "-interface", iface)
+
+	if _, err := run(ctx, "arp", "-S", ip, mac, "temp"); err != nil {
+		return false, fmt.Errorf("arp -S %s: %w", ip, err)
+	}
+
+	return true, nil
 }
 
-// PinARP installs a static ARP entry for a LAN client. Without it the kernel
-// has no on-link route to the client (Cisco owns the subnet), so IP_BOUND_IF
-// frames leave with the default gateway's MAC and the client never sees them.
-// Note: it must be `arp -S` (capital, replaces existing entry) — lowercase
-// `arp -s` fails with "can only proxy" while the subnet is routed into the
-// tunnel. "temp" keeps the entry evictable; the supervisor re-asserts it.
-func PinARP(ctx context.Context, ip, mac string) error {
-	_, err := run(ctx, "arp", "-S", ip, mac, "temp")
-	if err != nil {
-		return fmt.Errorf("arp -S %s: %w", ip, err)
+// arpEntryMatches reports whether `arp -n` output resolves to the expected
+// MAC on the expected interface (format: "? (ip) at <mac> on <iface> ...").
+func arpEntryMatches(arpOutput, mac, iface string) bool {
+	fields := strings.Fields(arpOutput)
+
+	var gotMAC, gotIface string
+
+	for i := 0; i < len(fields)-1; i++ {
+		switch fields[i] {
+		case "at":
+			gotMAC = fields[i+1]
+		case "on":
+			gotIface = fields[i+1]
+		}
 	}
 
-	return nil
+	return gotIface == iface && normalizeMAC(gotMAC) == normalizeMAC(mac)
+}
+
+// normalizeMAC strips leading zeros from each octet — macOS arp prints
+// "72:ce:39:12:45:f" for "72:ce:39:12:45:0f".
+func normalizeMAC(mac string) string {
+	parts := strings.Split(strings.ToLower(mac), ":")
+	for i, p := range parts {
+		parts[i] = strings.TrimLeft(p, "0")
+	}
+
+	return strings.Join(parts, ":")
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
