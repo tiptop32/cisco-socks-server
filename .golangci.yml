@@ -97,7 +97,7 @@ linters-settings:
     disabled-checks:
       - unnamedResult
   gofumpt:
-    module-path: github.com/merzzzl/cisco-socks5
+    module-path: github.com/merzzzl/cisco-socks-server
     extra-rules: true
   testifylint:
     enable-all: true
@@ -108,7 +108,7 @@ linters-settings:
         yaml: goCamel
 run:
   allow-parallel-runners: true
-  go: "1.20"
+  go: "1.24"
 output:
   uniq-by-line: false
   sort-results: true

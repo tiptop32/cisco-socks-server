@@ -5,14 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os/exec"
 	"strings"
+
+	"github.com/merzzzl/cisco-socks-server/internal/utils/shell"
 )
 
 var ErrNoLANInterface = errors.New("no non-tunnel LAN interface found")
 
 func DetectLAN(ctx context.Context) (string, string, error) {
-	out, err := run(ctx, "netstat", "-rn", "-f", "inet")
+	out, err := shell.Run(ctx, "netstat", "-rn", "-f", "inet")
 	if err == nil {
 		if name := parseDefaultNonTunnel(out); name != "" {
 			if cidr, cerr := connectedCIDR(name); cerr == nil {
@@ -25,7 +26,7 @@ func DetectLAN(ctx context.Context) (string, string, error) {
 }
 
 func parseDefaultNonTunnel(netstatOutput string) string {
-	for _, line := range strings.Split(netstatOutput, "\n") {
+	for line := range strings.SplitSeq(netstatOutput, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -111,36 +112,20 @@ func scanRFC1918() (string, string, error) {
 				continue
 			}
 
-			if !isRFC1918(ipnet.IP) {
+			// IsPrivate on an IPv4 address is exactly the RFC 1918 ranges
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || !ip4.IsPrivate() {
 				continue
 			}
 
 			ones, _ := ipnet.Mask.Size()
-			network := ipnet.IP.To4().Mask(ipnet.Mask)
+			network := ip4.Mask(ipnet.Mask)
 
 			return fmt.Sprintf("%s/%d", network, ones), ifi.Name, nil
 		}
 	}
 
 	return "", "", ErrNoLANInterface
-}
-
-func isRFC1918(ip net.IP) bool {
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return false
-	}
-
-	switch {
-	case ip4[0] == 10:
-		return true
-	case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
-		return true
-	case ip4[0] == 192 && ip4[1] == 168:
-		return true
-	}
-
-	return false
 }
 
 // EnsureClientPinned keeps a LAN client reachable while Cisco owns the
@@ -158,15 +143,15 @@ func isRFC1918(ip net.IP) bool {
 // lowercase `arp -s` fails with "can only proxy" while the subnet is routed
 // into the tunnel. Returns true when a re-pin was performed.
 func EnsureClientPinned(ctx context.Context, ip, mac, iface string) (bool, error) {
-	if out, err := run(ctx, "arp", "-n", ip); err == nil && arpEntryMatches(out, mac, iface) {
+	if out, err := shell.Run(ctx, "arp", "-n", ip); err == nil && arpEntryMatches(out, mac, iface) {
 		return false, nil
 	}
 
 	// route change fails with "not in table" until the ARP entry exists
 	// (arp -S creates the host entry itself) — safe to ignore
-	_, _ = run(ctx, "route", "change", ip, "-interface", iface)
+	_, _ = shell.Run(ctx, "route", "change", ip, "-interface", iface)
 
-	if _, err := run(ctx, "arp", "-S", ip, mac, "temp"); err != nil {
+	if _, err := shell.Run(ctx, "arp", "-S", ip, mac, "temp"); err != nil {
 		return false, fmt.Errorf("arp -S %s: %w", ip, err)
 	}
 
@@ -201,13 +186,4 @@ func normalizeMAC(mac string) string {
 	}
 
 	return strings.Join(parts, ":")
-}
-
-func run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
-	}
-
-	return string(out), nil
 }

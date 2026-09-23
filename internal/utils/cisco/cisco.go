@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/merzzzl/cisco-socks-server/internal/utils/shell"
 )
 
 const ciscoPath = "/opt/cisco/secureclient/bin/vpn"
@@ -23,15 +25,16 @@ var (
 )
 
 func Connect(ctx context.Context, profile, user, password string) error {
+	// not shell.Run: credentials go through stdin
 	cmd := exec.CommandContext(ctx, ciscoPath, "-s", "connect", profile)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("%s\n%s\ny\n", user, password))
+	cmd.Stdin = strings.NewReader(user + "\n" + password + "\ny\n")
 
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("vpn connection error: %w", err)
-	}
-
 	output := string(out)
+
+	if err != nil {
+		return fmt.Errorf("vpn connection error: %w: %s", err, strings.TrimSpace(output))
+	}
 
 	if hasAcquiredError(output) {
 		return ErrAcquired
@@ -53,7 +56,7 @@ func Connect(ctx context.Context, profile, user, password string) error {
 }
 
 func Status(ctx context.Context) (string, error) {
-	out, err := run(ctx, ciscoPath, "-s", "state")
+	out, err := shell.Run(ctx, ciscoPath, "-s", "state")
 	if err != nil {
 		return StateUnknown, fmt.Errorf("vpn state check error: %w", err)
 	}
@@ -62,8 +65,7 @@ func Status(ctx context.Context) (string, error) {
 }
 
 func Disconnect(ctx context.Context) error {
-	_, err := run(ctx, ciscoPath, "-s", "disconnect")
-	if err != nil {
+	if _, err := shell.Run(ctx, ciscoPath, "-s", "disconnect"); err != nil {
 		return fmt.Errorf("vpn disconnection error: %w", err)
 	}
 
@@ -71,13 +73,7 @@ func Disconnect(ctx context.Context) error {
 }
 
 func DisablePF(ctx context.Context) error {
-	_, err := run(ctx, "pfctl", "-d")
-
-	return err
-}
-
-func KillUI(ctx context.Context) error {
-	_, err := run(ctx, "killall", "Cisco Secure Client")
+	_, err := shell.Run(ctx, "pfctl", "-d")
 
 	return err
 }
@@ -85,9 +81,9 @@ func KillUI(ctx context.Context) error {
 func parseState(output string) string {
 	var last string
 
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if state, ok := strings.CutPrefix(strings.TrimSpace(line), ">> state: "); ok {
-			last = strings.SplitN(state, " ", 2)[0]
+			last, _, _ = strings.Cut(state, " ")
 		}
 	}
 
@@ -104,7 +100,7 @@ func parseState(output string) string {
 }
 
 func hasAcquiredError(output string) bool {
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, ">> error:") && strings.Contains(line, "Connect capability is unavailable") {
 			return true
@@ -112,13 +108,4 @@ func hasAcquiredError(output string) bool {
 	}
 
 	return false
-}
-
-func run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
-	}
-
-	return string(out), nil
 }
