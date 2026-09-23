@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -13,10 +14,16 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := loadConfig()
 	if err != nil {
-		slog.Error("failed to load config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	level := slog.LevelInfo
@@ -31,17 +38,29 @@ func main() {
 
 	srv := service.New(cfg.CiscoUser, cfg.CiscoPassword, cfg.CiscoProfile, cfg.DNSServers, cfg.toLANClients())
 
-	if !cfg.noTUI {
+	tuiDone := make(chan struct{})
+
+	if cfg.noTUI {
+		close(tuiDone)
+	} else {
 		go func() {
+			defer close(tuiDone)
 			defer cancel()
 
-			if err := tui.CreateTUI(srv, level); err != nil {
+			if err := tui.CreateTUI(ctx, srv, level); err != nil {
 				slog.Error("failed to create tui", "error", err)
 			}
 		}()
 	}
 
-	if err := srv.Start(ctx); err != nil {
-		slog.Error("service stopped", "error", err)
-	}
+	err = srv.Start(ctx)
+
+	// the TUI must restore the terminal before anything is printed or the
+	// process exits; afterwards route logs back to stdout so the final
+	// error is visible
+	cancel()
+	<-tuiDone
+	log.Setup(os.Stdout, level)
+
+	return err
 }

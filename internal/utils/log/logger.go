@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 )
 
 func Setup(out io.Writer, level slog.Level) {
@@ -19,7 +20,6 @@ type colorHandler struct {
 	out   io.Writer
 	level slog.Level
 	attrs []slog.Attr
-	group string
 }
 
 func (h *colorHandler) Enabled(_ context.Context, l slog.Level) bool {
@@ -61,18 +61,14 @@ func (h *colorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &colorHandler{
 		out:   h.out,
 		level: h.level,
-		attrs: append(h.attrs, attrs...),
-		group: h.group,
+		// fresh slice: plain append could share a backing array between siblings
+		attrs: slices.Concat(h.attrs, attrs),
 	}
 }
 
-func (h *colorHandler) WithGroup(name string) slog.Handler {
-	return &colorHandler{
-		out:   h.out,
-		level: h.level,
-		attrs: h.attrs,
-		group: name,
-	}
+// WithGroup is a no-op: only the top-level "error" attr is ever rendered.
+func (h *colorHandler) WithGroup(string) slog.Handler {
+	return h
 }
 
 func formatLevel(l slog.Level) string {
@@ -84,6 +80,6 @@ func formatLevel(l slog.Level) string {
 	case l >= slog.LevelInfo:
 		return colorize("INF", 10)
 	default:
-		return colorize("DBG", 10)
+		return colorize("DBG", 8)
 	}
 }

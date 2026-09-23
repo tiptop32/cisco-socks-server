@@ -84,23 +84,19 @@ func (s *Service) Start(ctx context.Context) error {
 		})
 	}
 
-	if err := g.Wait(); err != nil {
-		slog.Error("service stopped", "error", err)
-
-		return err
-	}
-
-	return nil
+	return g.Wait()
 }
 
 func (s *Service) startPinner(ctx context.Context) error {
-	<-s.ciscoReady
+	select {
+	case <-s.ciscoReady:
+	case <-ctx.Done():
+		return nil
+	}
 
-	for ctx.Err() == nil {
+	for sleepCtx(ctx, pinInterval) {
 		state := s.GetState()
 		if !state.CiscoConnected || state.LANInterface == "" {
-			time.Sleep(pinInterval)
-
 			continue
 		}
 
@@ -108,12 +104,23 @@ func (s *Service) startPinner(ctx context.Context) error {
 			if repinned, err := route.EnsureClientPinned(ctx, lc.IP, lc.MAC, state.LANInterface); err != nil {
 				slog.Debug("arp pin failed", "ip", lc.IP, "error", err)
 			} else if repinned {
-				slog.Info("LAN client pinned", "ip", lc.IP, "mac", lc.MAC)
+				slog.Info("LAN client pinned: " + lc.IP + " -> " + lc.MAC)
 			}
 		}
-
-		time.Sleep(pinInterval)
 	}
 
 	return nil
+}
+
+// sleepCtx waits for d and reports whether ctx is still alive afterwards.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }

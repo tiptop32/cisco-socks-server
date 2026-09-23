@@ -17,6 +17,8 @@ const (
 	// the agent can stay in "Reconnecting" indefinitely (observed 6+ min), and
 	// only an explicit "vpn -s disconnect" kicks it out of that state.
 	ciscoReconnectGrace = 2 * time.Minute
+	// shutdown must not hang on a wedged agent
+	ciscoDisconnectTimeout = 30 * time.Second
 )
 
 func (s *Service) startCisco(ctx context.Context) error {
@@ -24,7 +26,10 @@ func (s *Service) startCisco(ctx context.Context) error {
 	connectedByUs := false
 	connectDelay := ciscoPollInterval
 
-	var reconnectingSince time.Time
+	var (
+		reconnectingSince time.Time
+		delay             time.Duration // first tick runs immediately
+	)
 
 	defer func() {
 		s.setStatus(func(st *State) {
@@ -32,13 +37,16 @@ func (s *Service) startCisco(ctx context.Context) error {
 		})
 
 		if connectedByUs {
-			if err := cisco.Disconnect(context.Background()); err != nil {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ciscoDisconnectTimeout)
+			defer cancel()
+
+			if err := cisco.Disconnect(dctx); err != nil {
 				slog.Error("failed to disconnect cisco", "error", err)
 			}
 		}
 	}()
 
-	for ctx.Err() == nil {
+	for sleepCtx(ctx, delay) {
 		// snapshot LAN before Cisco hijacks the default route — listener will
 		// be bound to this interface via IP_BOUND_IF so reply traffic egresses
 		// via the physical NIC regardless of routing table.
@@ -54,7 +62,7 @@ func (s *Service) startCisco(ctx context.Context) error {
 			}
 		}
 
-		delay := ciscoPollInterval
+		delay = ciscoPollInterval
 
 		ciscoState, err := cisco.Status(ctx)
 
@@ -136,11 +144,6 @@ func (s *Service) startCisco(ctx context.Context) error {
 		if state.CiscoConnected && !ciscoReadyNotified {
 			close(s.ciscoReady)
 			ciscoReadyNotified = true
-		}
-
-		select {
-		case <-ctx.Done():
-		case <-time.After(delay):
 		}
 	}
 

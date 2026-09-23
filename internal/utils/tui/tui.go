@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,7 +30,9 @@ func (l *logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func CreateTUI(svc *service.Service, level slog.Level) error {
+// CreateTUI runs the UI until Ctrl+C or until ctx is cancelled (service
+// stopped), restoring the terminal before returning in both cases.
+func CreateTUI(ctx context.Context, svc *service.Service, level slog.Level) error {
 	lw := &logWriter{logs: make(chan string, 256)}
 
 	log.Setup(lw, level)
@@ -68,6 +71,16 @@ func CreateTUI(svc *service.Service, level slog.Level) error {
 	g.FgColor = gocui.ColorDefault
 
 	go animateBanner(g, done)
+
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			g.Update(func(*gocui.Gui) error {
+				return gocui.ErrQuit
+			})
+		}
+	}()
 
 	g.SetManagerFunc(func(g *gocui.Gui) error {
 		maxX, maxY := g.Size()

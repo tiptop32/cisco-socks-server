@@ -2,21 +2,66 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"sync"
-	"syscall"
+	"time"
 
 	socks5 "github.com/things-go/go-socks5"
-	"golang.org/x/sys/unix"
+	"golang.org/x/sync/errgroup"
+)
+
+const (
+	proxyPort          = "8080"
+	acceptErrorBackoff = 500 * time.Millisecond
+	vpnWatchInterval   = 2 * time.Second
 )
 
 type proxyLogger struct{}
 
-func (p *proxyLogger) Errorf(format string, args ...any) {
+func (*proxyLogger) Errorf(format string, args ...any) {
 	slog.Error(fmt.Sprintf(format, args...))
+}
+
+// connTracker remembers live client connections so they can be dropped at
+// once when the tunnel goes away: their upstream legs are dead by then, and
+// without an explicit close clients hang until TCP gives up.
+type connTracker struct {
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+func newConnTracker() *connTracker {
+	return &connTracker{conns: make(map[net.Conn]struct{})}
+}
+
+func (ct *connTracker) add(c net.Conn) {
+	ct.mu.Lock()
+	ct.conns[c] = struct{}{}
+	ct.mu.Unlock()
+}
+
+func (ct *connTracker) remove(c net.Conn) {
+	ct.mu.Lock()
+	delete(ct.conns, c)
+	ct.mu.Unlock()
+}
+
+func (ct *connTracker) closeAll() int {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	n := len(ct.conns)
+	for c := range ct.conns {
+		_ = c.Close()
+	}
+
+	clear(ct.conns)
+
+	return n
 }
 
 func (s *Service) startProxy(ctx context.Context) error {
@@ -30,108 +75,145 @@ func (s *Service) startProxy(ctx context.Context) error {
 		return nil
 	}
 
+	listeners, err := s.proxyListeners(ctx)
+	if err != nil {
+		return err
+	}
+
 	server := socks5.NewServer(socks5.WithConnectMiddleware(func(_ context.Context, _ io.Writer, request *socks5.Request) error {
 		slog.Info("connection to " + request.DestAddr.Address())
 
 		return nil
 	}), socks5.WithLogger(&proxyLogger{}))
 
-	// Listener 1: loopback (no IP_BOUND_IF) — for localhost clients
-	loopbackList, err := net.Listen("tcp4", "127.0.0.1:8080")
-	if err != nil {
-		return fmt.Errorf("failed to listen on 127.0.0.1:8080: %w", err)
-	}
-
-	listeners := []net.Listener{loopbackList}
-	state := s.GetState()
-
-	// Listener 2: any address on en0 with IP_BOUND_IF — for LAN clients
-	if state.LANInterface != "" {
-		ifi, ifErr := net.InterfaceByName(state.LANInterface)
-		if ifErr != nil {
-			slog.Warn("failed to lookup LAN interface",
-				"interface", state.LANInterface, "error", ifErr)
-		} else {
-			lc := net.ListenConfig{}
-			idx := ifi.Index
-			lc.Control = func(_, _ string, c syscall.RawConn) error {
-				var serr error
-				cerr := c.Control(func(fd uintptr) {
-					serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, idx)
-				})
-				if cerr != nil {
-					return cerr
-				}
-				return serr
-			}
-
-			lanList, lanErr := lc.Listen(ctx, "tcp4", "0.0.0.0:8080")
-			if lanErr != nil {
-				slog.Warn("failed to listen on interface",
-					"interface", state.LANInterface, "error", lanErr)
-			} else {
-				slog.Info("proxy bound to LAN interface",
-					"interface", state.LANInterface)
-				listeners = append(listeners, lanList)
-			}
-		}
-	} else {
-		slog.Warn("no LAN interface detected, proxy will use loopback only")
-	}
+	tracker := newConnTracker()
+	defer tracker.closeAll()
 
 	s.setStatus(func(st *State) {
 		st.ProxyStarted = true
 	})
 
-	slog.Info("starting SOCKS5 server on 8080")
+	slog.Info("starting SOCKS5 server on " + proxyPort)
 
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	g, gctx := errgroup.WithContext(ctx)
 
 	for _, l := range listeners {
-		l := l
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			acceptConns(ctx, l, server)
-		}()
-		go func() {
-			<-ctx.Done()
-			_ = l.Close()
-		}()
+		g.Go(func() error {
+			return acceptConns(gctx, l, server, tracker)
+		})
 	}
 
-	wg.Wait()
+	g.Go(func() error {
+		s.dropConnsOnVPNLoss(gctx, tracker)
+
+		return nil
+	})
+
+	// unblocks Accept; gctx is also cancelled when Wait returns, so this
+	// goroutine never outlives startProxy
+	go func() {
+		<-gctx.Done()
+
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("proxy: %w", err)
+	}
+
 	slog.Info("proxy server stopped")
+
 	return nil
 }
 
-func interfaceIPv4(ifi *net.Interface) string {
-	addrs, err := ifi.Addrs()
+// proxyListeners opens the loopback listener (mandatory, serves localhost)
+// and, when a LAN interface is known, a wildcard listener pinned to it via
+// IP_BOUND_IF (serves LAN clients). The LAN listener is best-effort.
+func (s *Service) proxyListeners(ctx context.Context) ([]net.Listener, error) {
+	var lc net.ListenConfig
+
+	loopback, err := lc.Listen(ctx, "tcp4", net.JoinHostPort("127.0.0.1", proxyPort))
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("failed to listen on loopback: %w", err)
 	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok {
-			if ip := ipnet.IP.To4(); ip != nil {
-				return ip.String()
-			}
-		}
+
+	listeners := []net.Listener{loopback}
+
+	iface := s.GetState().LANInterface
+	if iface == "" {
+		slog.Warn("no LAN interface detected, proxy serves localhost only")
+
+		return listeners, nil
 	}
-	return ""
+
+	lan, err := listenBoundToInterface(ctx, iface)
+	if err != nil {
+		slog.Warn("failed to listen on LAN interface", "interface", iface, "error", err)
+
+		return listeners, nil
+	}
+
+	slog.Info("proxy bound to LAN interface", "interface", iface)
+
+	return append(listeners, lan), nil
 }
 
-func acceptConns(ctx context.Context, l net.Listener, server *socks5.Server) {
+func acceptConns(ctx context.Context, l net.Listener, server *socks5.Server, tracker *connTracker) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			slog.Debug("accept error", "error", err)
-			return
+
+			if errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("listener %s closed unexpectedly: %w", l.Addr(), err)
+			}
+
+			// transient (EMFILE, ECONNABORTED, ...): back off and keep serving
+			slog.Warn("accept error", "error", err)
+
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(acceptErrorBackoff):
+			}
+
+			continue
 		}
-		go server.ServeConn(conn)
+
+		tracker.add(conn)
+
+		go func() {
+			defer tracker.remove(conn)
+
+			_ = server.ServeConn(conn)
+		}()
+	}
+}
+
+func (s *Service) dropConnsOnVPNLoss(ctx context.Context, tracker *connTracker) {
+	ticker := time.NewTicker(vpnWatchInterval)
+	defer ticker.Stop()
+
+	wasConnected := s.GetState().CiscoConnected
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		connected := s.GetState().CiscoConnected
+		if wasConnected && !connected {
+			if n := tracker.closeAll(); n > 0 {
+				slog.Info(fmt.Sprintf("VPN lost, dropped %d active connections", n))
+			}
+		}
+
+		wasConnected = connected
 	}
 }
