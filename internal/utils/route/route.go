@@ -151,8 +151,8 @@ func EnsureClientPinned(ctx context.Context, ip, mac, iface string) (bool, error
 	// (arp -S creates the host entry itself) — safe to ignore
 	_, _ = shell.Run(ctx, "route", "change", ip, "-interface", iface)
 
-	if _, err := shell.Run(ctx, "arp", "-S", ip, mac, "temp"); err != nil {
-		return false, fmt.Errorf("arp -S %s: %w", ip, err)
+	if out, err := shell.Run(ctx, "arp", "-S", ip, mac, "temp"); err != nil {
+		return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
 
 	return true, nil
