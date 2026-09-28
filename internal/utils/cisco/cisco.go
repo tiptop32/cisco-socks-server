@@ -73,7 +73,11 @@ func Disconnect(ctx context.Context) error {
 }
 
 func DisablePF(ctx context.Context) error {
-	_, err := shell.Run(ctx, "pfctl", "-d")
+	out, err := shell.Run(ctx, "pfctl", "-d")
+	// pfctl exits 1 when pf is already off; that is the state we want.
+	if err != nil && strings.Contains(out, "pf not enabled") {
+		return nil
+	}
 
 	return err
 }
