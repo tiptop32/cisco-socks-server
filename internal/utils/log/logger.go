@@ -6,16 +6,24 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 )
 
 func Setup(out io.Writer, level slog.Level) {
 	slog.SetDefault(slog.New(&colorHandler{out: out, level: level}))
 }
 
-func colorize(s string, c int) string {
+// Colorize wraps s in an ANSI-256 foreground color escape.
+func Colorize(s string, c int) string {
 	return fmt.Sprintf("\033[38;5;%dm%s\033[0m", c, s)
 }
 
+// colorHandler renders single-line records:
+//
+//	HH:MM:SS LVL message key=value ... error
+//
+// Attrs are dimmed and the error attr is always last, in red. Groups are
+// flattened (WithGroup is a no-op).
 type colorHandler struct {
 	out   io.Writer
 	level slog.Level
@@ -27,32 +35,45 @@ func (h *colorHandler) Enabled(_ context.Context, l slog.Level) bool {
 }
 
 func (h *colorHandler) Handle(_ context.Context, r slog.Record) error {
-	ts := colorize(r.Time.Format("15:04:05"), 7)
-	lvl := formatLevel(r.Level)
-	msg := r.Message
+	var (
+		b      strings.Builder
+		errStr string
+	)
 
-	var errStr string
+	b.WriteString(Colorize(r.Time.Format("15:04:05"), 7))
+	b.WriteByte(' ')
+	b.WriteString(formatLevel(r.Level))
+	b.WriteByte(' ')
+	b.WriteString(r.Message)
 
-	for _, a := range h.attrs {
-		if a.Key == "error" {
-			errStr = colorize(a.Value.String(), 1)
-		}
-	}
-
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "error" {
-			errStr = colorize(a.Value.String(), 1)
+	appendAttr := func(a slog.Attr) bool {
+		switch {
+		case a.Equal(slog.Attr{}):
+		case a.Key == "error":
+			errStr = a.Value.String()
+		default:
+			b.WriteByte(' ')
+			b.WriteString(Colorize(a.Key+"="+a.Value.String(), 8))
 		}
 
 		return true
-	})
-
-	if errStr != "" {
-		_, err := fmt.Fprintf(h.out, "%s %s %s %s\n", ts, lvl, msg, errStr)
-		return err
 	}
 
-	_, err := fmt.Fprintf(h.out, "%s %s %s\n", ts, lvl, msg)
+	for _, a := range h.attrs {
+		appendAttr(a)
+	}
+
+	r.Attrs(appendAttr)
+
+	if errStr != "" {
+		b.WriteByte(' ')
+		b.WriteString(Colorize(errStr, 1))
+	}
+
+	b.WriteByte('\n')
+
+	// one Write per record: both stdout and the TUI log channel take it whole
+	_, err := io.WriteString(h.out, b.String())
 
 	return err
 }
@@ -66,7 +87,7 @@ func (h *colorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup is a no-op: only the top-level "error" attr is ever rendered.
+// WithGroup is a no-op: attrs are rendered flat.
 func (h *colorHandler) WithGroup(string) slog.Handler {
 	return h
 }
@@ -74,12 +95,12 @@ func (h *colorHandler) WithGroup(string) slog.Handler {
 func formatLevel(l slog.Level) string {
 	switch {
 	case l >= slog.LevelError:
-		return colorize("ERR", 9)
+		return Colorize("ERR", 9)
 	case l >= slog.LevelWarn:
-		return colorize("WRN", 11)
+		return Colorize("WRN", 11)
 	case l >= slog.LevelInfo:
-		return colorize("INF", 10)
+		return Colorize("INF", 10)
 	default:
-		return colorize("DBG", 8)
+		return Colorize("DBG", 8)
 	}
 }

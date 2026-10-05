@@ -13,9 +13,11 @@ import (
 
 const pinInterval = time.Second
 
+// LANClient is a LAN host pinned to the LAN interface while the VPN is up
+// (see route.EnsureClientPinned).
 type LANClient struct {
-	IP  string
-	MAC string
+	IP  string `yaml:"ip"`
+	MAC string `yaml:"mac"`
 }
 
 type Service struct {

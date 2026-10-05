@@ -13,17 +13,12 @@ import (
 	"github.com/merzzzl/cisco-socks-server/internal/service"
 )
 
-type LANClient struct {
-	IP  string `yaml:"ip"`
-	MAC string `yaml:"mac"`
-}
-
 type Config struct {
-	CiscoUser     string      `yaml:"user"`
-	CiscoPassword string      `yaml:"password"`
-	CiscoProfile  string      `yaml:"profile"`
-	DNSServers    []string    `yaml:"dns_servers"`
-	LANClients    []LANClient `yaml:"lan_clients"`
+	CiscoUser     string              `yaml:"user"`
+	CiscoPassword string              `yaml:"password"`
+	CiscoProfile  string              `yaml:"profile"`
+	DNSServers    []string            `yaml:"dns_servers"`
+	LANClients    []service.LANClient `yaml:"lan_clients"`
 	noTUI         bool
 	debug         bool
 }
@@ -78,6 +73,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: dns_servers is required")
 	}
 
+	// plain IPs only: queries go to <ip>:53, and a hostname would have to be
+	// resolved through this very DNS server
+	for i, srv := range c.DNSServers {
+		if net.ParseIP(srv) == nil {
+			return fmt.Errorf("config: dns_servers[%d]: invalid IP address %q", i, srv)
+		}
+	}
+
 	// fail fast on malformed lan_clients: at runtime a bad entry would only
 	// surface as a debug-level "pin skipped" message every poll tick
 	for i, lc := range c.LANClients {
@@ -91,14 +94,4 @@ func (c *Config) validate() error {
 	}
 
 	return nil
-}
-
-func (c *Config) toLANClients() []service.LANClient {
-	out := make([]service.LANClient, 0, len(c.LANClients))
-
-	for _, lc := range c.LANClients {
-		out = append(out, service.LANClient{IP: lc.IP, MAC: lc.MAC})
-	}
-
-	return out
 }
