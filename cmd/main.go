@@ -36,20 +36,18 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := service.New(cfg.CiscoUser, cfg.CiscoPassword, cfg.CiscoProfile, cfg.DNSServers, cfg.toLANClients())
+	srv := service.New(cfg.CiscoUser, cfg.CiscoPassword, cfg.CiscoProfile, cfg.DNSServers, cfg.LANClients)
 
-	tuiDone := make(chan struct{})
+	// buffered: the TUI goroutine must not block if run returns early
+	tuiErr := make(chan error, 1)
 
 	if cfg.noTUI {
-		close(tuiDone)
+		tuiErr <- nil
 	} else {
 		go func() {
-			defer close(tuiDone)
 			defer cancel()
 
-			if err := tui.CreateTUI(ctx, srv, level); err != nil {
-				slog.Error("failed to create tui", "error", err)
-			}
+			tuiErr <- tui.CreateTUI(ctx, srv, level)
 		}()
 	}
 
@@ -57,9 +55,14 @@ func run() error {
 
 	// the TUI must restore the terminal before anything is printed or the
 	// process exits; afterwards route logs back to stdout so the final
-	// error is visible
+	// error is visible. A TUI failure is reported here rather than logged
+	// from the goroutine: at that point slog still feeds the dead TUI.
 	cancel()
-	<-tuiDone
+
+	if terr := <-tuiErr; terr != nil && err == nil {
+		err = fmt.Errorf("tui: %w", terr)
+	}
+
 	log.Setup(os.Stdout, level)
 
 	return err

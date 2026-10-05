@@ -32,12 +32,13 @@ func Connect(ctx context.Context, profile, user, password string) error {
 	out, err := cmd.CombinedOutput()
 	output := string(out)
 
-	if err != nil {
-		return fmt.Errorf("vpn connection error: %w: %s", err, strings.TrimSpace(output))
-	}
-
+	// checked first: the CLI may report the conflict with a non-zero exit
 	if hasAcquiredError(output) {
 		return ErrAcquired
+	}
+
+	if err != nil {
+		return fmt.Errorf("vpn connection error: %w: %s", err, strings.TrimSpace(output))
 	}
 
 	// "-s connect" prints an unordered event stream: a successful connect can
@@ -49,7 +50,7 @@ func Connect(ctx context.Context, profile, user, password string) error {
 	}
 
 	if state != StateConnected {
-		return fmt.Errorf("%w (state %s): %s", ErrNotConnected, state, output)
+		return fmt.Errorf("%w (state %s): %s", ErrNotConnected, state, strings.TrimSpace(output))
 	}
 
 	return nil

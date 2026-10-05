@@ -33,7 +33,16 @@ profile: your-vpn-profile
 dns_servers:
   - 10.0.0.1
   - 10.0.0.2
+# optional: LAN hosts that must reach the proxy while the VPN is up
+lan_clients:
+  - ip: 192.168.0.42
+    mac: 72:ce:39:12:45:0f
 ```
+
+`dns_servers` must be plain IP addresses. `lan_clients` entries are pinned
+to the LAN interface (per-host route + static ARP), because Cisco routes the
+whole `192.168.0.0/16` into the tunnel and replies would otherwise never
+reach them.
 
 ## Run
 

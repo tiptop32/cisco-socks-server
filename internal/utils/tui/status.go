@@ -7,6 +7,7 @@ import (
 	"github.com/jroimartin/gocui"
 
 	"github.com/merzzzl/cisco-socks-server/internal/service"
+	"github.com/merzzzl/cisco-socks-server/internal/utils/log"
 )
 
 func setupStatus(g *gocui.Gui, svc *service.Service, done <-chan struct{}, maxX, maxY int) error {
@@ -50,16 +51,16 @@ func setupStatus(g *gocui.Gui, svc *service.Service, done <-chan struct{}, maxX,
 
 func indicator(ok bool) string {
 	if ok {
-		return colorize("● OK", 10)
+		return log.Colorize("● OK", 10)
 	}
 
-	return colorize("○ --", 9)
+	return log.Colorize("○ --", 9)
 }
 
 func bindLabel(iface string) string {
 	if iface == "" {
-		return colorize("○ --", 9)
+		return log.Colorize("○ --", 9)
 	}
 
-	return colorize("● "+iface, 10)
+	return log.Colorize("● "+iface, 10)
 }

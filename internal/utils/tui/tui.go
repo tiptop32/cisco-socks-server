@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -115,10 +114,6 @@ func CreateTUI(ctx context.Context, svc *service.Service, level slog.Level) erro
 
 func isNewView(err error) bool {
 	return errors.Is(err, gocui.ErrUnknownView)
-}
-
-func colorize(s string, c int) string {
-	return fmt.Sprintf("\033[38;5;%dm%s\033[0m", c, s)
 }
 
 func randomArt() string {
